@@ -11,13 +11,14 @@ nconf.env({
 nconf.defaults({
   host: '0.0.0.0',
   port: 5000,
-  ticker: 'TRUR',
+  ticker: 'MSFT',
   fastema: 3,
   slowema: 5,
   interval: 'hour',
   offset: 7 * 24,
   multiplier: 0.1,
-  volume: 1000,
+  volatility: 0.01,
+  volume: 10,
   token: null
 });
 
@@ -66,11 +67,13 @@ async function run() {
   const interval = nconf.get('interval');
   const { figi } = await api.searchOne({ ticker: nconf.get('ticker') });
   let time;
-  api.candle({ figi, interval, from: new Date().toJSON() }, async function(candle) {
+  api.candle({ figi, interval }, async function(candle) {
     if (candle.time === time) return;
     time = candle.time;
-    const now = new Date(candle.time);
+    console.log('Candle', candle);
+    const now = new Date(candle.time).getTime();
     const intervalInMS = parseInterval(interval);
+    // получить список свечей за указанный промежуток времени
     const { candles } = await api.candlesGet({ 
       figi,
       interval, 
@@ -94,32 +97,66 @@ async function run() {
       fastEMA = bar.fastEMA;
       slowEMA = bar.slowEMA;
     }
+    if (candles.length < 1) return;
     // получить данные предыдущей свечи
-    const bar = candles[candles.length - 2];
-    const price = bar.c;
+    const bar = candles[candles.length - 1];
     // получить данные по инструменту
     const { 
       lots = 0,
-      averagePositionPrice = { value: Infinity }
+      averagePositionPrice = {}
     } = await api.instrumentPortfolio({ figi }) || {};
+    // получить список недавних операций
+    const {
+      operations = []
+    } = await api.operations({
+      figi,
+      from: new Date(now - nconf.get('offset') * intervalInMS).toJSON(),
+      to: new Date(now + intervalInMS).toJSON()
+    }) || [];
+    // цена последней операции по инструменту
+    const { price = Infinity } = operations[0] || {};
     // есть сигнал на покупку
     if (bar.signal === 'Buy') {
-      console.log(bar.signal, lots, averagePositionPrice.value, price);
-      // текущая цена ниже средней цены позиции
-      if (averagePositionPrice.value > price) {
-        const volume = lots > 0 ? lots + lots * nconf.get('multiplier') : nconf.get('volume');
-        const order = await api.marketOrder({ figi, lots: volume, operation: 'Buy' });
-        console.log('Buy', order);
+      console.log(bar.signal, lots, averagePositionPrice.value, bar.c, price);
+      // если нет открытых позиций по инструменту
+      if (!lots) {
+        try {
+          const order = await api.marketOrder({
+            figi,
+            lots: nconf.get('volume'),
+            operation: 'Buy'
+          });
+          console.log('Buy', order);
+        } catch(err) {
+          console.log(err);
+        }
+      }
+      // если открытые позиции есть и средняя цена позиции больше текущей (+волатильность)
+      else if (lots > 0 && price > bar.c+nconf.get('volatility')) {
+        try {
+          const order = await api.marketOrder({
+            figi,
+            lots: nconf.get('volume') + lots * nconf.get('multiplier'),
+            operation: 'Buy'
+          });
+          console.log('Add', order);
+        } catch(err) {
+          console.log(err);
+        }
       }
     }
     // есть сигнал на продажу и куплены лоты
     else if (bar.signal === 'Sell' && lots > 0) {
-      console.log(bar.signal, lots, averagePositionPrice.value, price);
+      console.log(bar.signal, lots, averagePositionPrice.value, bar.c, price);
       const orders = (await api.orders() || []).filter(item => item.figi === figi);
-      // нет отложенных ордеров по данному инструменту и текущая цена выше средней цены позиции
-      if (!orders.length && averagePositionPrice.value < price) {
-        const order = await api.marketOrder({ figi, lots, operation: 'Sell' });
-        console.log('Sell', order);
+      // нет отложенных ордеров по данному инструменту и текущая цена (-волатильность) выше средней цены позиции
+      if (!orders.length && averagePositionPrice.value < bar.c-nconf.get('volatility')) {
+        try {
+          const order = await api.marketOrder({ figi, lots, operation: 'Sell' });
+          console.log('Sell', order);
+        } catch(err) {
+          console.log(err);
+        }
       }
     }
   });

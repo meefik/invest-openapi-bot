@@ -1,6 +1,6 @@
 {
   "name": "kormobot",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Tinkoff.Invest trading bot",
   "author": "Anton Skshidlevsky <meefik@gmai.com>",
   "main": "server.js",
