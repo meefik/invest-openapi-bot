@@ -1,11 +1,11 @@
 {
   "name": "kormobot",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Tinkoff.Invest trading bot",
   "author": "Anton Skshidlevsky <meefik@gmai.com>",
   "main": "server.js",
   "dependencies": {
-    "@tinkoff/invest-openapi-js-sdk": "^1.2.16",
+    "@tinkoff/invest-openapi-js-sdk": "^1.2.17",
     "express": "^4.17.1",
     "nconf": "^0.11.2"
   },

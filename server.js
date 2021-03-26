@@ -1,6 +1,7 @@
 const nconf = require('nconf');
 const express = require('express');
 const bodyParser = require('body-parser');
+// https://github.com/TinkoffCreditSystems/invest-openapi-js-sdk
 const OpenAPI = require('@tinkoff/invest-openapi-js-sdk/build/OpenAPI.cjs');
 
 nconf.env({
@@ -16,16 +17,18 @@ nconf.defaults({
   slowema: 5,
   interval: 'hour',
   offset: 7 * 24,
-  multiplier: 0.1,
   volatility: 0.01,
-  volume: 10,
+  profit: 0.05,
+  quantity: 1,
+  limit: 10,
   token: null
 });
 
 const api = new OpenAPI({
   // apiURL: 'http://localhost:8080',
   // socketURL: 'ws://localhost:8080',
-  apiURL: 'https://api-invest.tinkoff.ru/openapi/sandbox',
+  // apiURL: 'https://api-invest.tinkoff.ru/openapi/sandbox',
+  apiURL: 'https://api-invest.tinkoff.ru/openapi',
   socketURL: 'wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws',
   secretToken: nconf.get('token')
 });
@@ -70,7 +73,7 @@ async function run() {
   api.candle({ figi, interval }, async function(candle) {
     if (candle.time === time) return;
     time = candle.time;
-    console.log('Candle', candle);
+    console.log(candle.time, candle.figi, candle.c, candle.v);
     const now = new Date(candle.time).getTime();
     const intervalInMS = parseInterval(interval);
     // получить список свечей за указанный промежуток времени
@@ -98,64 +101,58 @@ async function run() {
       slowEMA = bar.slowEMA;
     }
     if (candles.length < 1) return;
-    // получить данные предыдущей свечи
+    // данные последней свечи
     const bar = candles[candles.length - 1];
+    // цена закрытия
+    const price = bar.c;
     // получить данные по инструменту
     const { 
       lots = 0,
       averagePositionPrice = {}
     } = await api.instrumentPortfolio({ figi }) || {};
-    // получить список недавних операций
-    const {
-      operations = []
-    } = await api.operations({
-      figi,
-      from: new Date(now - nconf.get('offset') * intervalInMS).toJSON(),
-      to: new Date(now + intervalInMS).toJSON()
-    }) || [];
-    // цена последней операции по инструменту
-    const { price = Infinity } = operations[0] || {};
     // есть сигнал на покупку
     if (bar.signal === 'Buy') {
-      console.log(bar.signal, lots, averagePositionPrice.value, bar.c, price);
+      // получить список недавних операций
+      const {
+        operations = []
+      } = await api.operations({
+        figi,
+        from: new Date(now - nconf.get('offset') * intervalInMS).toJSON(),
+        to: new Date(now + intervalInMS).toJSON()
+      }) || [];
+      // цена последней операции по инструменту
+      const lastOperationPrice = (operations[0] || {}).price;
+      const volatility = lastOperationPrice ? Math.abs(price/lastOperationPrice-1) : Infinity;
       // если нет открытых позиций по инструменту
       if (!lots) {
         try {
-          const order = await api.marketOrder({
-            figi,
-            lots: nconf.get('volume'),
-            operation: 'Buy'
-          });
-          console.log('Buy', order);
+          const order = await api.marketOrder({ figi, lots: nconf.get('quantity'), operation: 'Buy' });
+          console.log(new Date(now).toJSON(), order.orderId, bar.figi, bar.signal, price, lots, order.executedLots);
         } catch(err) {
-          console.log(err);
+          console.log(err.message);
         }
       }
       // если открытые позиции есть и средняя цена позиции больше текущей (+волатильность)
-      else if (lots > 0 && price > bar.c+nconf.get('volatility')) {
+      else if (lots > 0 && lots < nconf.get('limit') && volatility > nconf.get('volatility')) {
         try {
-          const order = await api.marketOrder({
-            figi,
-            lots: nconf.get('volume') + lots * nconf.get('multiplier'),
-            operation: 'Buy'
-          });
-          console.log('Add', order);
+          const order = await api.marketOrder({ figi, lots: nconf.get('quantity'), operation: 'Buy' });
+          console.log(new Date(now).toJSON(), order.orderId, bar.figi, bar.signal, price, lots, order.executedLots);
         } catch(err) {
-          console.log(err);
+          console.log(err.message);
         }
       }
     }
     // есть сигнал на продажу и куплены лоты
     else if (bar.signal === 'Sell' && lots > 0) {
-      console.log(bar.signal, lots, averagePositionPrice.value, bar.c, price);
       const orders = (await api.orders() || []).filter(item => item.figi === figi);
+      const profit = price/averagePositionPrice.value-1;
       // нет отложенных ордеров по данному инструменту и текущая цена (-волатильность) выше средней цены позиции
-      if (!orders.length && averagePositionPrice.value < bar.c-nconf.get('volatility')) {
+      if (!orders.length && profit > nconf.get('profit')) {
         try {
           const order = await api.marketOrder({ figi, lots, operation: 'Sell' });
-          console.log('Sell', order);
+          console.log(new Date(now).toJSON(), order.orderId, bar.figi, bar.signal, price, lots, order.executedLots);
         } catch(err) {
-          console.log(err);
+          console.log(err.message);
         }
       }
     }
@@ -198,11 +195,17 @@ app.get('/api/candles', async function (req, res) {
     fastEMA = bar.fastEMA;
     slowEMA = bar.slowEMA;
   }
-  res.json(candles);
-});
-app.get('/api/portfolio', async function (req, res) {
-  const { figi } = await api.searchOne({ ticker: nconf.get('ticker') });
-  const portfolio = await api.instrumentPortfolio({ figi });
-  res.json(portfolio);
+  const {
+    lots,
+    expectedYield = {},
+    averagePositionPrice = {}
+  } = await api.instrumentPortfolio({ figi }) || {};
+  res.json({
+    lots,
+    price: candles[candles.length-1].c,
+    averagePositionPrice: averagePositionPrice.value,
+    expectedYield: expectedYield.value,
+    candles
+  });
 });
 app.listen(nconf.get('port'), nconf.get('host'));

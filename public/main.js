@@ -1,5 +1,11 @@
 /* global Highcharts */
 Highcharts.getJSON('/api/candles', function (data) {
+  var candles = data.candles;
+  var price = data.price;
+  var averagePositionPrice = data.averagePositionPrice || 0;
+  var expectedYield = data.expectedYield || 0;
+  var profit = 100 * price / averagePositionPrice - 100;
+  var lots = data.lots;
   // split the data set into ohlc and volume
   var ohlc = [],
     volume = [],
@@ -7,46 +13,46 @@ Highcharts.getJSON('/api/candles', function (data) {
     slowEMA = [],
     signals = [];
 
-  for (var i = 0; i < data.length; i++) {
+  for (var i = 0; i < candles.length; i++) {
     ohlc.push([
-      data[i].time, // the date
-      data[i].o, // open
-      data[i].h, // high
-      data[i].l, // low
-      data[i].c // close
+      candles[i].time, // the date
+      candles[i].o, // open
+      candles[i].h, // high
+      candles[i].l, // low
+      candles[i].c // close
     ]);
 
     volume.push([
-      data[i].time, // the date
-      data[i].v // the volume
+      candles[i].time, // the date
+      candles[i].v // the volume
     ]);
 
     fastEMA.push([
-      data[i].time, // the date
-      data[i].fastEMA // the fast EMA
+      candles[i].time, // the date
+      candles[i].fastEMA // the fast EMA
     ]);
 
     slowEMA.push([
-      data[i].time, // the date
-      data[i].slowEMA // the fast EMA
+      candles[i].time, // the date
+      candles[i].slowEMA // the fast EMA
     ]);
 
-    if (data[i].signal === 'Buy') {
+    if (candles[i].signal === 'Buy') {
       signals.push({
-        value: new Date(data[i].time), // the date
+        value: new Date(candles[i].time), // the date
         color: 'green',
         dashStyle: 'Dot',
-        x: new Date(data[i].time),
+        x: new Date(candles[i].time),
         title: 'B',
         text: 'Buy'
       });
     }
-    if (data[i].signal === 'Sell') {
+    if (candles[i].signal === 'Sell') {
       signals.push({
-        value: new Date(data[i].time), // the date
+        value: new Date(candles[i].time), // the date
         color: 'red',
         dashStyle: 'Dot',
-        x: new Date(data[i].time),
+        x: new Date(candles[i].time),
         title: 'S',
         text: 'Sell'
       });
@@ -75,7 +81,24 @@ Highcharts.getJSON('/api/candles', function (data) {
       height: '90%',
       resize: {
         enabled: true
-      }
+      },
+      plotLines: [{
+        value: price,
+        color: 'red',
+        dashStyle: 'shortdash',
+        width: 2,
+        label: {
+          text: expectedYield ? expectedYield + ' (' + profit.toFixed(2) + '%)' : ''
+        }
+      }, {
+        value: averagePositionPrice,
+        color: 'green',
+        dashStyle: 'shortdash',
+        width: 2,
+        label: {
+          text: lots + ' lots'
+        }
+      }]
     }, {
       labels: {
         align: 'left'
