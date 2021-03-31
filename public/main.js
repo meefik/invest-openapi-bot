@@ -1,5 +1,6 @@
 /* global Highcharts */
-Highcharts.getJSON('/api/candles', function (data) {
+var params = new URL(location.href).searchParams;
+Highcharts.getJSON(`/api/candles?ticker=${params.get('ticker')}`, function (data) {
   var candles = data.candles;
   var price = data.price;
   var averagePositionPrice = data.averagePositionPrice || 0;

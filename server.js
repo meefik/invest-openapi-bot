@@ -12,24 +12,29 @@ nconf.env({
 nconf.defaults({
   host: '0.0.0.0',
   port: 5000,
-  ticker: 'MSFT',
-  fastema: 3,
-  slowema: 5,
-  interval: 'hour',
-  offset: 7 * 24,
-  volatility: 0.01,
-  profit: 0.05,
-  quantity: 1,
-  limit: 10,
-  token: null
+  token: null,
+  // apiurl: 'http://localhost:8080',
+  // socketurl: 'ws://localhost:8080',
+  // apiurl: 'https://api-invest.tinkoff.ru/openapi/sandbox',
+  apiurl: 'https://api-invest.tinkoff.ru/openapi',
+  socketurl: 'wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws',
+  instruments: ''
+  // MSFT: {
+  //   ticker: 'MSFT',
+  //   fastema: 3,
+  //   slowema: 5,
+  //   interval: 'hour',
+  //   offset: 7 * 24,
+  //   volatility: 0.01,
+  //   profit: 0.05,
+  //   quantity: 1,
+  //   limit: 10
+  // }
 });
 
 const api = new OpenAPI({
-  // apiURL: 'http://localhost:8080',
-  // socketURL: 'ws://localhost:8080',
-  // apiURL: 'https://api-invest.tinkoff.ru/openapi/sandbox',
-  apiURL: 'https://api-invest.tinkoff.ru/openapi',
-  socketURL: 'wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws',
+  apiURL: nconf.get('apiurl'),
+  socketURL: nconf.get('socketurl'),
   secretToken: nconf.get('token')
 });
 
@@ -66,9 +71,10 @@ function parseInterval(interval) {
   }
 }
 
-async function run() {
-  const interval = nconf.get('interval');
-  const { figi } = await api.searchOne({ ticker: nconf.get('ticker') });
+async function run(ticker) {
+  ticker = ticker.toLowerCase();
+  const interval = nconf.get(`${ticker}:interval`);
+  const { figi } = await api.searchOne({ ticker });
   let time;
   api.candle({ figi, interval }, async function(candle) {
     if (candle.time === time) return;
@@ -76,11 +82,12 @@ async function run() {
     console.log(candle.time, candle.figi, candle.c, candle.v);
     const now = new Date(candle.time).getTime();
     const intervalInMS = parseInterval(interval);
+    const offset = nconf.get(`${ticker}:offset`);
     // получить список свечей за указанный промежуток времени
     const { candles } = await api.candlesGet({ 
       figi,
-      interval, 
-      from: new Date(now - nconf.get('offset') * intervalInMS).toJSON(),
+      interval,
+      from: new Date(now - offset * intervalInMS).toJSON(),
       to: new Date(now).toJSON()
     });
     // вычислить EMA и точки пересечения
@@ -89,8 +96,8 @@ async function run() {
       const bar = candles[i];
       bar.time = new Date(bar.time).getTime();
       const price = (bar.h+bar.l+bar.o+bar.c)/4;
-      bar.fastEMA = calcEMA(nconf.get('fastema'), price, fastEMA);
-      bar.slowEMA = calcEMA(nconf.get('slowema'), price, slowEMA);
+      bar.fastEMA = calcEMA(nconf.get(`${ticker}:fastema`), price, fastEMA);
+      bar.slowEMA = calcEMA(nconf.get(`${ticker}:slowema`), price, slowEMA);
       if (slowEMA > fastEMA && bar.slowEMA < bar.fastEMA) {
         bar.signal = 'Buy';
       }
@@ -117,7 +124,7 @@ async function run() {
         operations = []
       } = await api.operations({
         figi,
-        from: new Date(now - nconf.get('offset') * intervalInMS).toJSON(),
+        from: new Date(now - offset * intervalInMS).toJSON(),
         to: new Date(now + intervalInMS).toJSON()
       }) || [];
       // цена последней операции по инструменту
@@ -126,16 +133,16 @@ async function run() {
       // если нет открытых позиций по инструменту
       if (!lots) {
         try {
-          const order = await api.marketOrder({ figi, lots: nconf.get('quantity'), operation: 'Buy' });
+          const order = await api.marketOrder({ figi, lots: nconf.get(`${ticker}:quantity`), operation: 'Buy' });
           console.log(new Date(now).toJSON(), order.orderId, bar.figi, bar.signal, price, lots, order.executedLots);
         } catch(err) {
           console.log(err.message);
         }
       }
       // если открытые позиции есть и средняя цена позиции больше текущей (+волатильность)
-      else if (lots > 0 && lots < nconf.get('limit') && volatility > nconf.get('volatility')) {
+      else if (lots > 0 && lots < nconf.get(`${ticker}:limit`) && volatility > nconf.get(`${ticker}:volatility`)) {
         try {
-          const order = await api.marketOrder({ figi, lots: nconf.get('quantity'), operation: 'Buy' });
+          const order = await api.marketOrder({ figi, lots: nconf.get(`${ticker}:quantity`), operation: 'Buy' });
           console.log(new Date(now).toJSON(), order.orderId, bar.figi, bar.signal, price, lots, order.executedLots);
         } catch(err) {
           console.log(err.message);
@@ -147,7 +154,7 @@ async function run() {
       const orders = (await api.orders() || []).filter(item => item.figi === figi);
       const profit = price/averagePositionPrice.value-1;
       // нет отложенных ордеров по данному инструменту и текущая цена (-волатильность) выше средней цены позиции
-      if (!orders.length && profit > nconf.get('profit')) {
+      if (!orders.length && profit > nconf.get(`${ticker}:profit`)) {
         try {
           const order = await api.marketOrder({ figi, lots, operation: 'Sell' });
           console.log(new Date(now).toJSON(), order.orderId, bar.figi, bar.signal, price, lots, order.executedLots);
@@ -160,7 +167,9 @@ async function run() {
   return figi;
 }
 
-run();
+nconf.get('instruments').split(',').forEach(async function(ticker) {
+  await run(ticker);
+});
 
 const app = express();
 app.enable('trust proxy');
@@ -169,13 +178,14 @@ app.use(bodyParser.json());
 app.use(express.static('public'));
 app.get('/api/candles', async function (req, res) {
   const now = new Date();
-  const interval = nconf.get('interval');
+  const ticker = (req.query.ticker||'').toLowerCase();
+  const interval = req.query.interval || 'hour';
   const intervalInMS = parseInterval(interval);
-  const { figi } = await api.searchOne({ ticker: nconf.get('ticker') });
+  const { figi } = await api.searchOne({ ticker });
   const { candles } = await api.candlesGet({ 
     figi,
     interval, 
-    from: new Date(now - nconf.get('offset') * intervalInMS).toJSON(),
+    from: new Date(now - nconf.get(`${ticker}:offset`) * intervalInMS).toJSON(),
     to: new Date(now).toJSON()
   });
   // вычислить EMA и точки пересечения
@@ -184,8 +194,8 @@ app.get('/api/candles', async function (req, res) {
     const bar = candles[i];
     bar.time = new Date(bar.time).getTime();
     const price = (bar.h+bar.l+bar.o+bar.c)/4;
-    bar.fastEMA = calcEMA(nconf.get('fastema'), price, fastEMA);
-    bar.slowEMA = calcEMA(nconf.get('slowema'), price, slowEMA);
+    bar.fastEMA = calcEMA(nconf.get(`${ticker}:fastema`), price, fastEMA);
+    bar.slowEMA = calcEMA(nconf.get(`${ticker}:slowema`), price, slowEMA);
     if (slowEMA > fastEMA && bar.slowEMA < bar.fastEMA) {
       bar.signal = 'Buy';
     }
