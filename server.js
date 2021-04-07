@@ -117,6 +117,8 @@ async function run(ticker) {
       lots = 0,
       averagePositionPrice = {}
     } = await api.instrumentPortfolio({ figi }) || {};
+    // если нет открытых позиций, то ничего не делать
+    if (!lots) return;
     // есть сигнал на покупку
     if (bar.signal === 'Buy') {
       // получить список недавних операций
@@ -130,17 +132,8 @@ async function run(ticker) {
       // цена последней операции по инструменту
       const lastOperationPrice = (operations[0] || {}).price;
       const volatility = lastOperationPrice ? Math.abs(price/lastOperationPrice-1) : Infinity;
-      // если нет открытых позиций по инструменту
-      if (!lots) {
-        try {
-          const order = await api.marketOrder({ figi, lots: nconf.get(`${ticker}:quantity`), operation: 'Buy' });
-          console.log(new Date(now).toJSON(), order.orderId, bar.figi, bar.signal, price, lots, order.executedLots);
-        } catch(err) {
-          console.log(err.message);
-        }
-      }
-      // если открытые позиции есть и средняя цена позиции больше текущей (+волатильность)
-      else if (lots > 0 && lots < nconf.get(`${ticker}:limit`) && volatility > nconf.get(`${ticker}:volatility`)) {
+      // если средняя цена позиции больше текущей (+волатильность)
+      if (lots < nconf.get(`${ticker}:limit`) && volatility > nconf.get(`${ticker}:volatility`)) {
         try {
           const order = await api.marketOrder({ figi, lots: nconf.get(`${ticker}:quantity`), operation: 'Buy' });
           console.log(new Date(now).toJSON(), order.orderId, bar.figi, bar.signal, price, lots, order.executedLots);
@@ -149,8 +142,8 @@ async function run(ticker) {
         }
       }
     }
-    // есть сигнал на продажу и куплены лоты
-    else if (bar.signal === 'Sell' && lots > 0) {
+    // есть сигнал на продажу
+    else if (bar.signal === 'Sell') {
       const orders = (await api.orders() || []).filter(item => item.figi === figi);
       const profit = price/averagePositionPrice.value-1;
       // нет отложенных ордеров по данному инструменту и текущая цена (-волатильность) выше средней цены позиции
