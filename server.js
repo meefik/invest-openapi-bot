@@ -18,24 +18,10 @@ nconf.defaults({
   // apiurl: 'https://api-invest.tinkoff.ru/openapi/sandbox',
   apiurl: 'https://api-invest.tinkoff.ru/openapi',
   socketurl: 'wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws',
-  instruments: ''
-  // MSFT: {
-  //   ticker: 'MSFT',
-  //   fastema: 3,
-  //   slowema: 5,
-  //   interval: 'hour',
-  //   offset: 7 * 24,
-  //   volatility: 0.01,
-  //   profit: 0.05,
-  //   quantity: 1,
-  //   limit: 10
-  // }
-});
-
-const api = new OpenAPI({
-  apiURL: nconf.get('apiurl'),
-  socketURL: nconf.get('socketurl'),
-  secretToken: nconf.get('token')
+  fastema: 3,
+  slowema: 5,
+  volatility: 0.02,
+  profit: 0.08
 });
 
 function calcEMA(n, price, prev) {
@@ -44,141 +30,133 @@ function calcEMA(n, price, prev) {
   return (alpha * price + (1 - alpha) * prev);
 }
 
-function parseInterval(interval) {
-  switch (interval) {
-  case '1min':
-    return 60 * 1000;
-  case '2min':
-    return 2 * 60 * 1000;
-  case '3min':
-    return 3 * 60 * 1000;
-  case '5min':
-    return 5 * 60 * 1000;
-  case '10min':
-    return 10 * 60 * 1000;
-  case '15min':
-    return 15 * 60 * 1000;
-  case '30min':
-    return 30 * 60 * 1000;
-  case 'hour':
-    return 60 * 60 * 1000;
-  case 'day':
-    return 24 * 60 * 60 * 1000;
-  case 'week':
-    return 7 * 24 * 60 * 60 * 1000;
-  case 'month':
-    return 31 * 24 * 60 * 60 * 1000;
+async function run(time, figi) {
+  const HOUR = 60 * 60 * 1000;
+  const WEEK = 7 * 24 * HOUR;
+  const MONTH = 30 * 24 * HOUR;
+  // получить список свечей за указанный промежуток времени
+  const { candles } = await api.candlesGet({
+    figi,
+    interval: 'hour',
+    from: new Date(time - WEEK).toJSON(),
+    to: new Date(time).toJSON()
+  });
+  // вычислить EMA и точки пересечения
+  let fastEMA, slowEMA;
+  for (let i = 0; i < candles.length; i++) {
+    const bar = candles[i];
+    bar.time = new Date(bar.time).getTime();
+    const price = (bar.h + bar.l + bar.o + bar.c) / 4;
+    bar.fastEMA = calcEMA(nconf.get('fastema'), price, fastEMA);
+    bar.slowEMA = calcEMA(nconf.get('slowema'), price, slowEMA);
+    if (slowEMA > fastEMA && bar.slowEMA < bar.fastEMA) {
+      bar.signal = 'Buy';
+    }
+    if (slowEMA < fastEMA && bar.slowEMA > bar.fastEMA) {
+      bar.signal = 'Sell';
+    }
+    fastEMA = bar.fastEMA;
+    slowEMA = bar.slowEMA;
+  }
+  if (candles.length < 1) return;
+  // данные последней свечи
+  const bar = candles[candles.length - 1];
+  console.log(new Date(bar.time).toJSON(), figi, bar.c, bar.v);
+  // если нет сигнала, то ничего не делать
+  if (!bar.signal) return;
+  // получить данные по инструменту
+  const {
+    lots = 0,
+    averagePositionPrice = {}
+  } = await api.instrumentPortfolio({ figi }) || {};
+  // если нет открытых позиций, то ничего не делать
+  if (!lots) return;
+  // получить список отложенных ордеров по инструменту
+  const orders = (await api.orders() || []).filter(item => item.figi === figi);
+  // если уже есть отложенные ордера по инструменту, то ничего не делать
+  if (orders.length > 0) return;
+  // есть сигнал на покупку или продажу
+  if (bar.signal === 'Buy') {
+    // получить список недавних операций
+    const {
+      operations = []
+    } = await api.operations({
+      figi,
+      from: new Date(time - MONTH).toJSON(),
+      to: new Date(time + HOUR).toJSON()
+    });
+    // цена и количество последней операции на покупку
+    const { price, quantity } = (operations[0] || {}).operationType === 'Buy' ? operations[0] : {};
+    // минимальный лот инструмента
+    const { lot } = await api.searchOne({ figi });
+    // отклонение от цены предыдущей операции
+    const deviation = price ? Math.abs(bar.c / price - 1) : Infinity;
+    // если отклонение цены больше заданной волатильности
+    if (deviation > nconf.get('volatility') && quantity > 0 && lot > 0) {
+      const order = await api.limitOrder({
+        figi,
+        lots: Math.ceil(quantity / lot),
+        price: bar.c,
+        operation: 'Buy'
+      });
+      console.log(new Date(time).toJSON(), order.orderId, bar.figi, bar.signal, bar.c, order);
+    }
+  } else if (bar.signal === 'Sell') {
+    // доля изменения цены относительно средней
+    const profit = bar.c / averagePositionPrice.value - 1;
+    // изменение цены больше заданной доли в плюс
+    if (profit > nconf.get('profit')) {
+      const order = await api.limitOrder({
+        figi,
+        lots,
+        price: bar.c,
+        operation: 'Sell'
+      });
+      console.log(new Date(time).toJSON(), order.orderId, bar.figi, bar.signal, bar.c, order);
+    }
   }
 }
 
-async function run(ticker) {
-  ticker = ticker.toLowerCase();
-  const interval = nconf.get(`${ticker}:interval`);
-  const { figi } = await api.searchOne({ ticker });
-  let time;
-  api.candle({ figi, interval }, async function(candle) {
-    if (candle.time === time) return;
-    time = candle.time;
-    console.log(candle.time, candle.figi, candle.c, candle.v);
-    const now = new Date(candle.time).getTime();
-    const intervalInMS = parseInterval(interval);
-    const offset = nconf.get(`${ticker}:offset`);
-    // получить список свечей за указанный промежуток времени
-    const { candles } = await api.candlesGet({ 
-      figi,
-      interval,
-      from: new Date(now - offset * intervalInMS).toJSON(),
-      to: new Date(now).toJSON()
-    });
-    // вычислить EMA и точки пересечения
-    let fastEMA, slowEMA;
-    for (let i = 0; i < candles.length; i++) {
-      const bar = candles[i];
-      bar.time = new Date(bar.time).getTime();
-      const price = (bar.h+bar.l+bar.o+bar.c)/4;
-      bar.fastEMA = calcEMA(nconf.get(`${ticker}:fastema`), price, fastEMA);
-      bar.slowEMA = calcEMA(nconf.get(`${ticker}:slowema`), price, slowEMA);
-      if (slowEMA > fastEMA && bar.slowEMA < bar.fastEMA) {
-        bar.signal = 'Buy';
-      }
-      if (slowEMA < fastEMA && bar.slowEMA > bar.fastEMA) {
-        bar.signal = 'Sell';
-      }
-      fastEMA = bar.fastEMA;
-      slowEMA = bar.slowEMA;
-    }
-    if (candles.length < 1) return;
-    // данные последней свечи
-    const bar = candles[candles.length - 1];
-    // цена закрытия
-    const price = bar.c;
-    // получить данные по инструменту
-    const { 
-      lots = 0,
-      averagePositionPrice = {}
-    } = await api.instrumentPortfolio({ figi }) || {};
-    // если нет открытых позиций, то ничего не делать
-    if (!lots) return;
-    // есть сигнал на покупку
-    if (bar.signal === 'Buy') {
-      // получить список недавних операций
-      const {
-        operations = []
-      } = await api.operations({
-        figi,
-        from: new Date(now - offset * intervalInMS).toJSON(),
-        to: new Date(now + intervalInMS).toJSON()
-      }) || [];
-      // цена последней операции по инструменту
-      const lastOperationPrice = (operations[0] || {}).price;
-      const volatility = lastOperationPrice ? Math.abs(price/lastOperationPrice-1) : Infinity;
-      // если средняя цена позиции больше текущей (+волатильность)
-      if (lots < nconf.get(`${ticker}:limit`) && volatility > nconf.get(`${ticker}:volatility`)) {
-        try {
-          const order = await api.marketOrder({ figi, lots: nconf.get(`${ticker}:quantity`), operation: 'Buy' });
-          console.log(new Date(now).toJSON(), order.orderId, bar.figi, bar.signal, price, lots, order.executedLots);
-        } catch(err) {
-          console.log(err.message);
-        }
-      }
-    }
-    // есть сигнал на продажу
-    else if (bar.signal === 'Sell') {
-      const orders = (await api.orders() || []).filter(item => item.figi === figi);
-      const profit = price/averagePositionPrice.value-1;
-      // нет отложенных ордеров по данному инструменту и текущая цена (-волатильность) выше средней цены позиции
-      if (!orders.length && profit > nconf.get(`${ticker}:profit`)) {
-        try {
-          const order = await api.marketOrder({ figi, lots, operation: 'Sell' });
-          console.log(new Date(now).toJSON(), order.orderId, bar.figi, bar.signal, price, lots, order.executedLots);
-        } catch(err) {
-          console.log(err.message);
-        }
-      }
-    }
-  });
-  return figi;
-}
-
-nconf.get('instruments').split(',').forEach(async function(ticker) {
-  await run(ticker);
+const api = new OpenAPI({
+  apiURL: nconf.get('apiurl'),
+  socketURL: nconf.get('socketurl'),
+  secretToken: nconf.get('token')
 });
+let time;
+setInterval(async function() {
+  const now = new Date();
+  now.setUTCMinutes(0);
+  now.setUTCSeconds(0);
+  now.setUTCMilliseconds(0);
+  if (time !== now.getTime()) {
+    time = now.getTime();
+    const { positions = [] } = await api.portfolio();
+    positions.filter(position => position.instrumentType === 'Stock').forEach(async function(position) {
+      try {
+        await run(time, position.figi);
+      } catch (err) {
+        console.log(now.toJSON(), err);
+      }
+    });
+  }
+}, 1000);
 
 const app = express();
 app.enable('trust proxy');
 app.disable('x-powered-by');
 app.use(bodyParser.json());
 app.use(express.static('public'));
-app.get('/api/candles', async function (req, res) {
+app.get('/api/candles', async function(req, res) {
+  const HOUR = 60 * 60 * 1000;
+  const WEEK = 7 * 24 * HOUR;
   const now = new Date();
-  const ticker = (req.query.ticker||'').toLowerCase();
+  const ticker = (req.query.ticker || '').toLowerCase();
   const interval = req.query.interval || 'hour';
-  const intervalInMS = parseInterval(interval);
   const { figi } = await api.searchOne({ ticker });
-  const { candles } = await api.candlesGet({ 
+  const { candles } = await api.candlesGet({
     figi,
-    interval, 
-    from: new Date(now - nconf.get(`${ticker}:offset`) * intervalInMS).toJSON(),
+    interval,
+    from: new Date(now - WEEK).toJSON(),
     to: new Date(now).toJSON()
   });
   // вычислить EMA и точки пересечения
@@ -186,9 +164,9 @@ app.get('/api/candles', async function (req, res) {
   for (let i = 0; i < candles.length; i++) {
     const bar = candles[i];
     bar.time = new Date(bar.time).getTime();
-    const price = (bar.h+bar.l+bar.o+bar.c)/4;
-    bar.fastEMA = calcEMA(nconf.get(`${ticker}:fastema`), price, fastEMA);
-    bar.slowEMA = calcEMA(nconf.get(`${ticker}:slowema`), price, slowEMA);
+    const price = (bar.h + bar.l + bar.o + bar.c) / 4;
+    bar.fastEMA = calcEMA(nconf.get('fastema'), price, fastEMA);
+    bar.slowEMA = calcEMA(nconf.get('slowema'), price, slowEMA);
     if (slowEMA > fastEMA && bar.slowEMA < bar.fastEMA) {
       bar.signal = 'Buy';
     }
@@ -205,7 +183,7 @@ app.get('/api/candles', async function (req, res) {
   } = await api.instrumentPortfolio({ figi }) || {};
   res.json({
     lots,
-    price: candles[candles.length-1].c,
+    price: candles[candles.length - 1].c,
     averagePositionPrice: averagePositionPrice.value,
     expectedYield: expectedYield.value,
     candles

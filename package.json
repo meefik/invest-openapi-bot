@@ -1,6 +1,6 @@
 {
   "name": "kormobot",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Tinkoff.Invest trading bot",
   "author": "Anton Skshidlevsky <meefik@gmai.com>",
   "main": "server.js",
@@ -9,8 +9,38 @@
     "express": "^4.17.1",
     "nconf": "^0.11.2"
   },
+  "devDependencies": {
+    "eslint": "^7.24.0",
+    "eslint-config-standard": "^16.0.2"
+  },
   "engines": {
-    "node": ">= 12.0.0",
+    "node": ">= 14.0.0",
     "npm": ">= 6.0.0"
+  },
+  "eslintConfig": {
+    "env": {
+      "browser": true,
+      "node": true,
+      "es6": true
+    },
+    "extends": "standard",
+    "rules": {
+      "indent": [
+        "error",
+        2
+      ],
+      "semi": [
+        "error",
+        "always"
+      ],
+      "quotes": [
+        "error",
+        "single"
+      ],
+      "space-before-function-paren": [
+        "error",
+        "never"
+      ]
+    }
   }
 }
