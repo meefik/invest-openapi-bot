@@ -20,7 +20,7 @@ nconf.defaults({
   socketurl: 'wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws',
   fastema: 3,
   slowema: 5,
-  volatility: 0.02,
+  volatility: 0.04,
   profit: 0.08
 });
 
@@ -90,7 +90,7 @@ async function run(time, figi) {
     // минимальный лот инструмента
     const { lot } = await api.searchOne({ figi });
     // отклонение от цены предыдущей операции
-    const deviation = price ? Math.abs(bar.c / price - 1) : Infinity;
+    const deviation = price ? (price / bar.c - 1) : Infinity;
     // если отклонение цены больше заданной волатильности
     if (deviation > nconf.get('volatility') && quantity > 0 && lot > 0) {
       const order = await api.limitOrder({
