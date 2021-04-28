@@ -20,8 +20,8 @@ nconf.defaults({
   socketurl: 'wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws',
   fastema: 3,
   slowema: 5,
-  volatility: 0.04,
-  profit: 0.08
+  profit: 0.1, // 10%
+  movement: 0.5 // 1/2 volatility
 });
 
 function calcEMA(n, price, prev) {
@@ -33,7 +33,7 @@ function calcEMA(n, price, prev) {
 async function run(time, figi) {
   const HOUR = 60 * 60 * 1000;
   const WEEK = 7 * 24 * HOUR;
-  const MONTH = 30 * 24 * HOUR;
+  const YEAR = 365 * 24 * HOUR;
   // получить список свечей за указанный промежуток времени
   const { candles } = await api.candlesGet({
     figi,
@@ -42,14 +42,16 @@ async function run(time, figi) {
     to: new Date(time).toJSON()
   });
   // вычислить EMA и точки пересечения
-  let fastEMA, slowEMA;
+  let fastEMA, slowEMA, trendEMA;
+  let min = Infinity; let max = 0;
   for (let i = 0; i < candles.length; i++) {
     const bar = candles[i];
     bar.time = new Date(bar.time).getTime();
     const price = (bar.h + bar.l + bar.o + bar.c) / 4;
     bar.fastEMA = calcEMA(nconf.get('fastema'), price, fastEMA);
     bar.slowEMA = calcEMA(nconf.get('slowema'), price, slowEMA);
-    if (slowEMA > fastEMA && bar.slowEMA < bar.fastEMA) {
+    bar.trendEMA = calcEMA(candles.length, price, trendEMA);
+    if (trendEMA > fastEMA && bar.trendEMA < bar.fastEMA) {
       bar.signal = 'Buy';
     }
     if (slowEMA < fastEMA && bar.slowEMA > bar.fastEMA) {
@@ -57,6 +59,9 @@ async function run(time, figi) {
     }
     fastEMA = bar.fastEMA;
     slowEMA = bar.slowEMA;
+    trendEMA = bar.trendEMA;
+    if (bar.c > max) max = bar.c;
+    if (bar.c < min) min = bar.c;
   }
   if (candles.length < 1) return;
   // данные последней свечи
@@ -82,17 +87,19 @@ async function run(time, figi) {
       operations = []
     } = await api.operations({
       figi,
-      from: new Date(time - MONTH).toJSON(),
+      from: new Date(time - YEAR).toJSON(),
       to: new Date(time + HOUR).toJSON()
     });
     // цена и количество последней операции на покупку
-    const { price, quantity } = (operations[0] || {}).operationType === 'Buy' ? operations[0] : {};
+    const { price = 0, quantity = 0 } = (operations[0] || {}).operationType === 'Buy' ? operations[0] : {};
     // минимальный лот инструмента
     const { lot } = await api.searchOne({ figi });
+    // волатильность за весь период выборки
+    const volatility = max / min - 1;
     // отклонение от цены предыдущей операции
-    const deviation = price ? (price / bar.c - 1) : Infinity;
-    // если отклонение цены больше заданной волатильности
-    if (deviation > nconf.get('volatility') && quantity > 0 && lot > 0) {
+    const deviation = Math.abs(price / bar.c - 1);
+    // если отклонение цены больше заданной доли от волатильности
+    if (averagePositionPrice.value > bar.c && quantity > 0 && deviation > volatility * nconf.get('movement')) {
       const order = await api.limitOrder({
         figi,
         lots: Math.ceil(quantity / lot),
