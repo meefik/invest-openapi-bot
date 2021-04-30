@@ -18,10 +18,12 @@ nconf.defaults({
   // apiurl: 'https://api-invest.tinkoff.ru/openapi/sandbox',
   apiurl: 'https://api-invest.tinkoff.ru/openapi',
   socketurl: 'wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws',
-  fastema: 3,
-  slowema: 5,
-  profit: 0.1, // 10%
-  movement: 0.5 // 1/2 volatility
+  strategy: {
+    fastema: 3, // 3 hours
+    slowema: 5, // 5 hours
+    buy: 0.5, // 50% of volatility
+    sell: 1 // 100% of volatility
+  }
 });
 
 function calcEMA(n, price, prev) {
@@ -42,16 +44,15 @@ async function run(time, figi) {
     to: new Date(time).toJSON()
   });
   // вычислить EMA и точки пересечения
-  let fastEMA, slowEMA, trendEMA;
+  let fastEMA, slowEMA;
   let min = Infinity; let max = 0;
   for (let i = 0; i < candles.length; i++) {
     const bar = candles[i];
     bar.time = new Date(bar.time).getTime();
     const price = (bar.h + bar.l + bar.o + bar.c) / 4;
-    bar.fastEMA = calcEMA(nconf.get('fastema'), price, fastEMA);
-    bar.slowEMA = calcEMA(nconf.get('slowema'), price, slowEMA);
-    bar.trendEMA = calcEMA(candles.length, price, trendEMA);
-    if (trendEMA > fastEMA && bar.trendEMA < bar.fastEMA) {
+    bar.fastEMA = calcEMA(nconf.get('strategy:fastema'), price, fastEMA);
+    bar.slowEMA = calcEMA(nconf.get('strategy:slowema'), price, slowEMA);
+    if (slowEMA > fastEMA && bar.slowEMA < bar.fastEMA) {
       bar.signal = 'Buy';
     }
     if (slowEMA < fastEMA && bar.slowEMA > bar.fastEMA) {
@@ -59,9 +60,8 @@ async function run(time, figi) {
     }
     fastEMA = bar.fastEMA;
     slowEMA = bar.slowEMA;
-    trendEMA = bar.trendEMA;
-    if (bar.c > max) max = bar.c;
-    if (bar.c < min) min = bar.c;
+    if (bar.h > max) max = bar.h;
+    if (bar.l < min) min = bar.l;
   }
   if (candles.length < 1) return;
   // данные последней свечи
@@ -80,6 +80,8 @@ async function run(time, figi) {
   const orders = (await api.orders() || []).filter(item => item.figi === figi);
   // если уже есть отложенные ордера по инструменту, то ничего не делать
   if (orders.length > 0) return;
+  // волатильность за весь период выборки
+  const volatility = max / min - 1;
   // есть сигнал на покупку или продажу
   if (bar.signal === 'Buy') {
     // получить список недавних операций
@@ -94,12 +96,10 @@ async function run(time, figi) {
     const { price = 0, quantity = 0 } = (operations[0] || {}).operationType === 'Buy' ? operations[0] : {};
     // минимальный лот инструмента
     const { lot } = await api.searchOne({ figi });
-    // волатильность за весь период выборки
-    const volatility = max / min - 1;
     // отклонение от цены предыдущей операции
     const deviation = Math.abs(price / bar.c - 1);
     // если отклонение цены больше заданной доли от волатильности
-    if (averagePositionPrice.value > bar.c && quantity > 0 && deviation > volatility * nconf.get('movement')) {
+    if (averagePositionPrice.value > bar.c && quantity > 0 && deviation > volatility * nconf.get('strategy:buy')) {
       const order = await api.limitOrder({
         figi,
         lots: Math.ceil(quantity / lot),
@@ -112,7 +112,7 @@ async function run(time, figi) {
     // доля изменения цены относительно средней
     const profit = bar.c / averagePositionPrice.value - 1;
     // изменение цены больше заданной доли в плюс
-    if (profit > nconf.get('profit')) {
+    if (profit > volatility * nconf.get('strategy:sell')) {
       const order = await api.limitOrder({
         figi,
         lots,
@@ -167,13 +167,15 @@ app.get('/api/candles', async function(req, res) {
     to: new Date(now).toJSON()
   });
   // вычислить EMA и точки пересечения
-  let fastEMA, slowEMA;
+  let fastEMA, slowEMA, trendEMA;
+  let min = Infinity; let max = 0;
   for (let i = 0; i < candles.length; i++) {
     const bar = candles[i];
     bar.time = new Date(bar.time).getTime();
     const price = (bar.h + bar.l + bar.o + bar.c) / 4;
-    bar.fastEMA = calcEMA(nconf.get('fastema'), price, fastEMA);
-    bar.slowEMA = calcEMA(nconf.get('slowema'), price, slowEMA);
+    bar.fastEMA = calcEMA(nconf.get('strategy:fastema'), price, fastEMA);
+    bar.slowEMA = calcEMA(nconf.get('strategy:slowema'), price, slowEMA);
+    bar.trendEMA = calcEMA(candles.length, price, trendEMA);
     if (slowEMA > fastEMA && bar.slowEMA < bar.fastEMA) {
       bar.signal = 'Buy';
     }
@@ -182,18 +184,26 @@ app.get('/api/candles', async function(req, res) {
     }
     fastEMA = bar.fastEMA;
     slowEMA = bar.slowEMA;
+    trendEMA = bar.trendEMA;
+    if (bar.h > max) max = bar.h;
+    if (bar.l < min) min = bar.l;
   }
   const {
     lots,
     expectedYield = {},
     averagePositionPrice = {}
   } = await api.instrumentPortfolio({ figi }) || {};
+  const price = candles[candles.length - 1].c;
+  const volatility = (max / min - 1) * 100;
+  const profit = (price / averagePositionPrice.value - 1) * 100;
   res.json({
     lots,
-    price: candles[candles.length - 1].c,
+    price,
     averagePositionPrice: averagePositionPrice.value,
     expectedYield: expectedYield.value,
-    candles
+    candles,
+    profit,
+    volatility
   });
 });
 app.listen(nconf.get('port'), nconf.get('host'));

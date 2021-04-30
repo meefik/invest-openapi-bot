@@ -1,20 +1,22 @@
 /* global Highcharts */
-var params = new URL(location.href).searchParams;
-Highcharts.getJSON(`/api/candles?ticker=${params.get('ticker')}`, function (data) {
-  var candles = data.candles;
-  var price = data.price;
-  var averagePositionPrice = data.averagePositionPrice || 0;
-  var expectedYield = data.expectedYield || 0;
-  var profit = 100 * price / averagePositionPrice - 100;
-  var lots = data.lots;
+const params = new URL(location.href).searchParams;
+Highcharts.getJSON(`/api/candles?ticker=${params.get('ticker')}`, function(data) {
+  const candles = data.candles;
+  const price = data.price;
+  const averagePositionPrice = data.averagePositionPrice || 0;
+  const expectedYield = data.expectedYield || 0;
+  const profit = data.profit || 0;
+  const lots = data.lots || 0;
+  const volatility = data.volatility || 0;
   // split the data set into ohlc and volume
-  var ohlc = [],
-    volume = [],
-    fastEMA = [],
-    slowEMA = [],
-    signals = [];
+  const ohlc = [];
+  const volume = [];
+  const fastEMA = [];
+  const slowEMA = [];
+  const trendEMA = [];
+  const signals = [];
 
-  for (var i = 0; i < candles.length; i++) {
+  for (let i = 0; i < candles.length; i++) {
     ohlc.push([
       candles[i].time, // the date
       candles[i].o, // open
@@ -24,18 +26,23 @@ Highcharts.getJSON(`/api/candles?ticker=${params.get('ticker')}`, function (data
     ]);
 
     volume.push([
-      candles[i].time, // the date
-      candles[i].v // the volume
+      candles[i].time,
+      candles[i].v // volume
     ]);
 
     fastEMA.push([
-      candles[i].time, // the date
-      candles[i].fastEMA // the fast EMA
+      candles[i].time,
+      candles[i].fastEMA
     ]);
 
     slowEMA.push([
-      candles[i].time, // the date
-      candles[i].slowEMA // the fast EMA
+      candles[i].time,
+      candles[i].slowEMA
+    ]);
+
+    trendEMA.push([
+      candles[i].time,
+      candles[i].trendEMA
     ]);
 
     if (candles[i].signal === 'Buy') {
@@ -89,15 +96,7 @@ Highcharts.getJSON(`/api/candles?ticker=${params.get('ticker')}`, function (data
         dashStyle: 'shortdash',
         width: 2,
         label: {
-          text: expectedYield ? expectedYield + ' (' + profit.toFixed(2) + '%)' : ''
-        }
-      }, {
-        value: averagePositionPrice,
-        color: 'green',
-        dashStyle: 'shortdash',
-        width: 2,
-        label: {
-          text: lots + ' lots'
+          text: 'lots=' + lots + ', avg=' + averagePositionPrice.toFixed(2) + ', volatility=' + volatility.toFixed(2) + '%, yield=' + expectedYield.toFixed(2) + ', profit=' + profit.toFixed(2) + '%'
         }
       }]
     }, {
@@ -134,6 +133,11 @@ Highcharts.getJSON(`/api/candles?ticker=${params.get('ticker')}`, function (data
       type: 'line',
       linkedTo: 'instrument',
       data: slowEMA
+    }, {
+      name: 'Trend EMA',
+      type: 'line',
+      linkedTo: 'instrument',
+      data: trendEMA
     }, {
       type: 'flags',
       shape: 'circlepin',
