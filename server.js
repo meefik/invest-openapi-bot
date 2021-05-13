@@ -21,8 +21,8 @@ nconf.defaults({
   strategy: {
     fastema: 3, // 3 hours
     slowema: 5, // 5 hours
-    buy: 0.5, // 50% of volatility
-    sell: 1 // 100% of volatility
+    buy: 0.05, // 5%
+    sell: 0.1 // 10%
   }
 });
 
@@ -45,7 +45,6 @@ async function run(time, figi) {
   });
   // вычислить EMA и точки пересечения
   let fastEMA, slowEMA;
-  let min = Infinity; let max = 0;
   for (let i = 0; i < candles.length; i++) {
     const bar = candles[i];
     bar.time = new Date(bar.time).getTime();
@@ -60,8 +59,6 @@ async function run(time, figi) {
     }
     fastEMA = bar.fastEMA;
     slowEMA = bar.slowEMA;
-    if (bar.h > max) max = bar.h;
-    if (bar.l < min) min = bar.l;
   }
   if (candles.length < 1) return;
   // данные последней свечи
@@ -80,8 +77,6 @@ async function run(time, figi) {
   const orders = (await api.orders() || []).filter(item => item.figi === figi);
   // если уже есть отложенные ордера по инструменту, то ничего не делать
   if (orders.length > 0) return;
-  // волатильность за весь период выборки
-  const volatility = max / min - 1;
   // есть сигнал на покупку или продажу
   if (bar.signal === 'Buy') {
     // получить список недавних операций
@@ -97,9 +92,9 @@ async function run(time, figi) {
     // минимальный лот инструмента
     const { lot } = await api.searchOne({ figi });
     // отклонение от цены предыдущей операции
-    const deviation = Math.abs(price / bar.c - 1);
+    const deviation = (price / bar.c - 1); //  Math.abs
     // если отклонение цены больше заданной доли от волатильности
-    if (averagePositionPrice.value > bar.c && quantity > 0 && deviation > volatility * nconf.get('strategy:buy')) {
+    if (averagePositionPrice.value > bar.c && quantity > 0 && deviation > nconf.get('strategy:buy')) {
       const order = await api.limitOrder({
         figi,
         lots: Math.ceil(quantity / lot),
@@ -112,7 +107,7 @@ async function run(time, figi) {
     // доля изменения цены относительно средней
     const profit = bar.c / averagePositionPrice.value - 1;
     // изменение цены больше заданной доли в плюс
-    if (profit > volatility * nconf.get('strategy:sell')) {
+    if (profit > nconf.get('strategy:sell')) {
       const order = await api.limitOrder({
         figi,
         lots,
