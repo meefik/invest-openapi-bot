@@ -13,10 +13,8 @@ nconf.defaults({
   host: '0.0.0.0',
   port: 5000,
   token: null,
-  // apiurl: 'http://localhost:8080',
-  // socketurl: 'ws://localhost:8080',
-  // apiurl: 'https://api-invest.tinkoff.ru/openapi/sandbox',
-  apiurl: 'https://api-invest.tinkoff.ru/openapi',
+  // apiurl: 'https://api-invest.tinkoff.ru/openapi',
+  apiurl: 'https://api-invest.tinkoff.ru/openapi/sandbox',
   socketurl: 'wss://api-invest.tinkoff.ru/openapi/md/v1/md-openapi/ws',
   strategy: {
     fastema: 3, // 3 hours
